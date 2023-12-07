@@ -7,6 +7,8 @@ import argparse
 import pickle
 import random
 import sys
+import os
+import pathlib
 
 from decision_transformer.evaluation.evaluate_episodes import evaluate_episode, evaluate_episode_rtg
 from decision_transformer.models.decision_transformer import DecisionTransformer
@@ -27,13 +29,18 @@ def experiment(
         exp_prefix,
         variant,
 ):
-    device = variant.get('device', 'cuda')
+    device = torch.device(variant.get('device', 'cuda') if torch.cuda.is_available() else "cpu")
+    print(device)
     log_to_wandb = variant.get('log_to_wandb', False)
 
     env_name, dataset = variant['env'], variant['dataset']
     model_type = variant['model_type']
     group_name = f'{exp_prefix}-{env_name}-{dataset}'
     exp_prefix = f'{group_name}-{random.randint(int(1e5), int(1e6) - 1)}'
+
+    model_dir = os.path.join(pathlib.Path(__file__).parent.resolve(),f'./models/{env_name}/')
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
 
     if env_name == 'hopper':
         env = gym.make('Hopper-v3')
@@ -219,6 +226,7 @@ def experiment(
             n_positions=1024,
             resid_pdrop=variant['dropout'],
             attn_pdrop=variant['dropout'],
+            n_ctx=variant['n_ctx'],
         )
     elif model_type == 'bc':
         model = MLPBCModel(
@@ -279,6 +287,8 @@ def experiment(
         if log_to_wandb:
             wandb.log(outputs)
 
+    torch.save(model, os.path.join(model_dir, model_type + '_' + exp_prefix + '.pt'))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -302,6 +312,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_steps_per_iter', type=int, default=10000)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--log_to_wandb', '-w', type=bool, default=False)
+    parser.add_argument('--n_ctx', type=int, default=1024)
     
     args = parser.parse_args()
 

@@ -17,7 +17,7 @@ import torch
 import pickle
 import blosc
 import argparse
-from create_dataset import create_dataset
+from create_dataset import create_dataset, create_gym_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=123)
@@ -65,7 +65,8 @@ class StateActionReturnDataset(Dataset):
 
         return states, actions, rtgs, timesteps
 
-obss, actions, returns, done_idxs, rtgs, timesteps = create_dataset(args.num_buffers, args.num_steps, args.game, args.data_dir_prefix, args.trajectories_per_buffer)
+#obss, actions, returns, done_idxs, rtgs, timesteps = create_dataset(args.num_buffers, args.num_steps, args.game, args.data_dir_prefix, args.trajectories_per_buffer)
+obss, actions, returns, done_idxs, rtgs, timesteps = create_gym_dataset("pong-mixed-v4", 0.2)
 
 # set up logging
 logging.basicConfig(
@@ -74,17 +75,36 @@ logging.basicConfig(
         level=logging.INFO,
 )
 
+
 train_dataset = StateActionReturnDataset(obss, args.context_length*3, actions, done_idxs, rtgs, timesteps)
 
+print(train_dataset.vocab_size)
+print(max(timesteps))
+
 mconf = GPTConfig(train_dataset.vocab_size, train_dataset.block_size,
-                  n_layer=6, n_head=8, n_embd=128, model_type=args.model_type, max_timestep=max(timesteps))
+                 n_layer=6, n_head=8, n_embd=128, model_type=args.model_type, max_timestep=max(timesteps))
+# mconf = GPTConfig(
+#     train_dataset.vocab_size,
+#     train_dataset.block_size,
+#     n_layer=6,
+#     n_head=8,
+#     n_embd=128,
+#     model_type=args.model_type,
+#     max_timestep=3901,
+# )
 model = GPT(mconf)
+
+checkpoint_path = "/content/drive/MyDrive/Purdue/ECE595RL/project/Pong_123.pt"  # or Pong, Qbert, Seaquest
+checkpoint = torch.load(checkpoint_path, map_location=torch.device('cuda'))
+model.load_state_dict(checkpoint)
 
 # initialize a trainer instance and kick off training
 epochs = args.epochs
 tconf = TrainerConfig(max_epochs=epochs, batch_size=args.batch_size, learning_rate=6e-4,
                       lr_decay=True, warmup_tokens=512*20, final_tokens=2*len(train_dataset)*args.context_length*3,
-                      num_workers=4, seed=args.seed, model_type=args.model_type, game=args.game, max_timestep=max(timesteps))
+                      num_workers=2, seed=args.seed, model_type=args.model_type, game=args.game, max_timestep=max(timesteps),
+                      ckpt_path='/content/drive/MyDrive/Purdue/ECE595RL/project/Pong_123.pt')
 trainer = Trainer(model, train_dataset, None, tconf)
+# trainer = Trainer(model, None, train_dataset, tconf)
 
 trainer.train()

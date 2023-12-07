@@ -27,10 +27,10 @@ def create_dataset(num_buffers, num_steps, game, data_dir_prefix, trajectories_p
     done_idxs = []
     stepwise_returns = []
 
-    transitions_per_buffer = np.zeros(50, dtype=int)
+    transitions_per_buffer = np.zeros(10, dtype=int)
     num_trajectories = 0
     while len(obss) < num_steps:
-        buffer_num = np.random.choice(np.arange(50 - num_buffers, 50), 1)[0]
+        buffer_num = np.random.choice(np.arange(10 - num_buffers, 10), 1)[0]
         i = transitions_per_buffer[buffer_num]
         print('loading from buffer %d which has %d already loaded' % (buffer_num, i))
         frb = FixedReplayBuffer(
@@ -41,8 +41,8 @@ def create_dataset(num_buffers, num_steps, game, data_dir_prefix, trajectories_p
             update_horizon=1,
             gamma=0.99,
             observation_dtype=np.uint8,
-            batch_size=32,
-            replay_capacity=100000)
+            batch_size=8,
+            replay_capacity=10000)
         if frb._loaded_buffers:
             done = False
             curr_num_transitions = len(obss)
@@ -62,7 +62,7 @@ def create_dataset(num_buffers, num_steps, game, data_dir_prefix, trajectories_p
                         trajectories_to_load -= 1
                 returns[-1] += ret[0]
                 i += 1
-                if i >= 100000:
+                if i >= 10000:
                     obss = obss[:curr_num_transitions]
                     actions = actions[:curr_num_transitions]
                     stepwise_returns = stepwise_returns[:curr_num_transitions]
@@ -100,3 +100,62 @@ def create_dataset(num_buffers, num_steps, game, data_dir_prefix, trajectories_p
     print('max timestep is %d' % max(timesteps))
 
     return obss, actions, returns, done_idxs, rtg, timesteps
+
+def create_gym_dataset(env_name, frac = 1.0):
+    
+    import d4rl_atari
+    import gym
+
+    env = gym.make(env_name, stack=True) # -v{0, 1, 2, 3, 4} for datasets with the other random seeds
+
+    # dataset will be automatically downloaded into ~/.d4rl/datasets/[GAME]/[INDEX]/[EPOCH]
+    dataset = env.get_dataset()
+    print(len(dataset['observations']))
+    print(dataset['observations'][0].shape)
+
+    num_samples = len(dataset['observations'])
+    obss = dataset['observations'][:num_samples]
+    actions = dataset['actions'][:num_samples]
+    stepwise_returns = dataset['rewards'][:num_samples]
+    terminals = dataset['terminals'][:num_samples]
+
+    done_idxs = []
+    for i, flag in enumerate(terminals):
+        if flag == True:
+            done_idxs.append(i)
+    
+    num_traj = len(done_idxs)
+    print(f"Number of trajectories: {num_traj}")
+    done_idxs = done_idxs[:int(frac*num_traj)]
+    done_idxs = np.array(done_idxs)
+
+    num_samples = done_idxs[-1]+1
+    obss = dataset['observations'][:num_samples]
+    actions = dataset['actions'][:num_samples]
+    stepwise_returns = dataset['rewards'][:num_samples]
+    terminals = dataset['terminals'][:num_samples]
+
+    print(len(obss))
+
+    # -- create reward-to-go dataset
+    start_index = 0
+    rtg = np.zeros_like(stepwise_returns)
+    for i in done_idxs:
+        i = int(i)
+        curr_traj_returns = stepwise_returns[start_index:i]
+        for j in range(i-1, start_index-1, -1): # start from i-1
+            rtg_j = curr_traj_returns[j-start_index:i-start_index]
+            rtg[j] = sum(rtg_j)
+        start_index = i
+    print('max rtg is %d' % max(rtg))
+
+    # -- create timestep dataset
+    start_index = 0
+    timesteps = np.zeros(len(actions)+1, dtype=int)
+    for i in done_idxs:
+        i = int(i)
+        timesteps[start_index:i+1] = np.arange(i+1 - start_index)
+        start_index = i+1
+    print('max timestep is %d' % max(timesteps))
+
+    return obss, actions, stepwise_returns, done_idxs, rtg, timesteps

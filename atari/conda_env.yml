@@ -2,9 +2,9 @@ name: decision-transformer-atari
 channels:
 - pytorch
 dependencies:
-- python=3.7.9
-- pytorch=1.2
-- cudatoolkit=10.
+- python=3.10.10
+- pytorch=2.1.0+cu118
+- cudatoolkit=11.8
 - numpy
 - psutil
 - opencv
