@@ -94,8 +94,6 @@ class Trainer:
             losses = []
             pbar = tqdm(enumerate(loader), total=len(loader)) if is_train else enumerate(loader)
             for it, (x, y, r, t) in pbar:
-                if (it+1) % 100 == 0:
-                    print('Epoch: %d, Iteration: %d'% (epoch_num, it+1))
                 # place data on the correct device
                 x = x.to(self.device)
                 y = y.to(self.device)
@@ -135,13 +133,15 @@ class Trainer:
 
                     # report progress
                     pbar.set_description(f"epoch {epoch+1} iter {it}: train loss {loss.item():.5f}. lr {lr:e}")
-            print(is_train)
+                else:
+                    print(f"epoch {epoch+1} iter {it}: eval loss {loss.item():.5f}")
+            
             if not is_train:
                 test_loss = float(np.mean(losses))
                 logger.info("test loss: %f", test_loss)
                 return test_loss
 
-        # best_loss = float('inf')
+        best_loss = float('inf')
         
         best_return = -float('inf')
 
@@ -158,9 +158,9 @@ class Trainer:
             # # supports early stopping based on the test loss, or just save always if no test set is provided
             good_model = self.test_dataset is None or test_loss < best_loss
             if self.config.ckpt_path is not None and good_model:
-                if self.test_dataset is not None:
+                if self.train_dataset is not None and self.test_dataset is not None:
                     best_loss = test_loss
-                self.save_checkpoint()
+                    self.save_checkpoint()
 
             # -- pass in target returns
             if self.config.model_type == 'naive':
@@ -182,7 +182,7 @@ class Trainer:
     def get_returns(self, ret):
         self.model.train(False)
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        args=Args(self.config.game.lower(), self.config.seed)
+        args=Args(self.config.game.lower(), self.config.seed, self.device)
         env = Env(args)
         env.eval()
 
@@ -239,7 +239,7 @@ class Trainer:
         print("target return: %d, eval return: %d" % (ret, eval_return))
         print(eval_return, eval_return_std)
         print(eval_length, eval_length_std)
-        save_anim(frames, 'Pong-v0.mp4')
+        save_anim(frames, f'{self.config.game}-v0.mp4')
         self.model.train(True)
         return eval_return
 
@@ -333,8 +333,8 @@ class Env():
         cv2.destroyAllWindows()
 
 class Args:
-    def __init__(self, game, seed):
-        self.device = torch.device('cuda')
+    def __init__(self, game, seed, device):
+        self.device = device
         self.seed = seed
         self.max_episode_length = 108e3
         self.game = game

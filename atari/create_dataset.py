@@ -101,7 +101,7 @@ def create_dataset(num_buffers, num_steps, game, data_dir_prefix, trajectories_p
 
     return obss, actions, returns, done_idxs, rtg, timesteps
 
-def create_gym_dataset(env_name, frac = 1.0):
+def create_atari_dataset(env_name, sample_K = None):
     
     import d4rl_atari
     import gym
@@ -126,16 +126,7 @@ def create_gym_dataset(env_name, frac = 1.0):
     
     num_traj = len(done_idxs)
     print(f"Number of trajectories: {num_traj}")
-    done_idxs = done_idxs[:int(frac*num_traj)]
     done_idxs = np.array(done_idxs)
-
-    num_samples = done_idxs[-1]+1
-    obss = dataset['observations'][:num_samples]
-    actions = dataset['actions'][:num_samples]
-    stepwise_returns = dataset['rewards'][:num_samples]
-    terminals = dataset['terminals'][:num_samples]
-
-    print(len(obss))
 
     # -- create reward-to-go dataset
     start_index = 0
@@ -157,5 +148,34 @@ def create_gym_dataset(env_name, frac = 1.0):
         timesteps[start_index:i+1] = np.arange(i+1 - start_index)
         start_index = i+1
     print('max timestep is %d' % max(timesteps))
+
+    ############ Select Top K trajectories ############
+    if not sample_K == None:
+        start_index = 0 
+        traj_len, returns = [], []
+        for i in done_idxs:
+            returns.append(rtg[i])
+            traj_len.append(i+1 - start_index)
+            start_index = i+1
+        sorted_inds = np.argsort(returns)  # lowest to highest
+        topK_sorted_inds = sorted_inds[-K:]
+        
+        sub_obss = []
+        sub_actions = []
+        sub_stepwise_returns = []
+        sub_done_idxs = []
+        sub_rtg = []
+        sub_timesteps = []
+        for i in topK_sorted_inds:
+            done_ind = done_idxs[i]
+            sub_done_idxs.append(done_ind)
+            sub_obss.extend(obss[done_ind-traj_len[i]:done_ind+1])
+            sub_actions.extend(actions[done_ind-traj_len[i]:done_ind+1])
+            sub_stepwise_returns.extend(stepwise_returns[done_ind-traj_len[i]:done_ind+1])
+            sub_timesteps.extend(timesteps[done_ind-traj_len[i]:done_ind+1])
+            sub_rtg.extend(rtg[done_ind-traj_len[i]:done_ind+1])
+        print(len(sub_obss))
+        print(len(sub_done_idxs))
+        return sub_obss, sub_actions, sub_stepwise_returns, sub_done_idxs, sub_rtg, sub_timesteps
 
     return obss, actions, stepwise_returns, done_idxs, rtg, timesteps
