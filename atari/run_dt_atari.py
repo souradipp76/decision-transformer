@@ -17,7 +17,7 @@ import torch
 import pickle
 import blosc
 import argparse
-from create_dataset import create_dataset
+from create_dataset import create_dataset, create_atari_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=123)
@@ -31,6 +31,10 @@ parser.add_argument('--batch_size', type=int, default=128)
 # 
 parser.add_argument('--trajectories_per_buffer', type=int, default=10, help='Number of trajectories to sample from each of the buffers.')
 parser.add_argument('--data_dir_prefix', type=str, default='./dqn_replay/')
+parser.add_argument('--dataset', type=str, default='breakout-mixed-v0')
+parser.add_argument('--ckpt_path', type=str, default=None)
+parser.add_argument('--save_path', type=str, default='.')
+parser.add_argument('--device', type=str, default='cuda')
 args = parser.parse_args()
 
 set_seed(args.seed)
@@ -65,7 +69,8 @@ class StateActionReturnDataset(Dataset):
 
         return states, actions, rtgs, timesteps
 
-obss, actions, returns, done_idxs, rtgs, timesteps = create_dataset(args.num_buffers, args.num_steps, args.game, args.data_dir_prefix, args.trajectories_per_buffer)
+# obss, actions, returns, done_idxs, rtgs, timesteps = create_dataset(args.num_buffers, args.num_steps, args.game, args.data_dir_prefix, args.trajectories_per_buffer)
+obss, actions, returns, done_idxs, rtgs, timesteps = create_atari_dataset(args.dataset)
 
 # set up logging
 logging.basicConfig(
@@ -75,16 +80,54 @@ logging.basicConfig(
 )
 
 train_dataset = StateActionReturnDataset(obss, args.context_length*3, actions, done_idxs, rtgs, timesteps)
+# test_dataset = StateActionReturnDataset(obss, args.context_length*3, actions, done_idxs, rtgs, timesteps)
 
-mconf = GPTConfig(train_dataset.vocab_size, train_dataset.block_size,
-                  n_layer=6, n_head=8, n_embd=128, model_type=args.model_type, max_timestep=max(timesteps))
+mconf = GPTConfig(train_dataset.vocab_size, 
+                train_dataset.block_size,
+                 n_layer=6, 
+                 n_head=8, 
+                 n_embd=128, 
+                 model_type=args.model_type, 
+                 max_timestep=max(timesteps))
+
+# # Config for Breakout                 
+# mconf = GPTConfig(
+#     train_dataset.vocab_size,
+#     train_dataset.block_size,
+#     n_layer=6,
+#     n_head=8,
+#     n_embd=128,
+#     model_type=args.model_type,
+#     max_timestep=2654,
+# )
+
+# # Config for Qbert                 
+# mconf = GPTConfig(
+#     train_dataset.vocab_size,
+#     train_dataset.block_size,
+#     n_layer=6,
+#     n_head=8,
+#     n_embd=128,
+#     model_type=args.model_type,
+#     max_timestep=3901,
+# )
+
+device = torch.device(args.device) if torch.cuda.is_available() else torch.device('cpu')
 model = GPT(mconf)
+
+if args.ckpt_path:
+    checkpoint_path = args.ckpt_path
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint)
 
 # initialize a trainer instance and kick off training
 epochs = args.epochs
 tconf = TrainerConfig(max_epochs=epochs, batch_size=args.batch_size, learning_rate=6e-4,
                       lr_decay=True, warmup_tokens=512*20, final_tokens=2*len(train_dataset)*args.context_length*3,
-                      num_workers=4, seed=args.seed, model_type=args.model_type, game=args.game, max_timestep=max(timesteps))
+                      num_workers=2, seed=args.seed, model_type=args.model_type, game=args.game, max_timestep=max(timesteps),
+                      ckpt_path=args.save_path)
+
 trainer = Trainer(model, train_dataset, None, tconf)
+# trainer = Trainer(model, None, train_dataset, tconf)
 
 trainer.train()

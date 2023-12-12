@@ -26,7 +26,7 @@ from torch.utils.data.dataloader import DataLoader
 
 logger = logging.getLogger(__name__)
 
-from mingpt.utils import sample
+from mingpt.utils import sample, save_anim
 import atari_py
 from collections import deque
 import random
@@ -65,14 +65,15 @@ class Trainer:
         # take over whatever gpus are on the system
         self.device = 'cpu'
         if torch.cuda.is_available():
-            self.device = torch.cuda.current_device()
+            self.device = torch.device('cuda')
             self.model = torch.nn.DataParallel(self.model).to(self.device)
+        print(self.device)
 
     def save_checkpoint(self):
         # DataParallel wrappers keep raw model object in .module attribute
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
         logger.info("saving %s", self.config.ckpt_path)
-        # torch.save(raw_model.state_dict(), self.config.ckpt_path)
+        torch.save(raw_model.state_dict(), self.config.ckpt_path)
 
     def train(self):
         model, config = self.model, self.config
@@ -81,6 +82,9 @@ class Trainer:
 
         def run_epoch(split, epoch_num=0):
             is_train = split == 'train'
+            
+            print(f'Is train: {is_train}')
+
             model.train(is_train)
             data = self.train_dataset if is_train else self.test_dataset
             loader = DataLoader(data, shuffle=True, pin_memory=True,
@@ -90,7 +94,6 @@ class Trainer:
             losses = []
             pbar = tqdm(enumerate(loader), total=len(loader)) if is_train else enumerate(loader)
             for it, (x, y, r, t) in pbar:
-
                 # place data on the correct device
                 x = x.to(self.device)
                 y = y.to(self.device)
@@ -130,13 +133,15 @@ class Trainer:
 
                     # report progress
                     pbar.set_description(f"epoch {epoch+1} iter {it}: train loss {loss.item():.5f}. lr {lr:e}")
-
+                else:
+                    print(f"epoch {epoch+1} iter {it}: eval loss {loss.item():.5f}")
+            
             if not is_train:
                 test_loss = float(np.mean(losses))
                 logger.info("test loss: %f", test_loss)
                 return test_loss
 
-        # best_loss = float('inf')
+        best_loss = float('inf')
         
         best_return = -float('inf')
 
@@ -144,15 +149,18 @@ class Trainer:
 
         for epoch in range(config.max_epochs):
 
-            run_epoch('train', epoch_num=epoch)
-            # if self.test_dataset is not None:
-            #     test_loss = run_epoch('test')
+            if self.train_dataset is not None:
+                run_epoch('train', epoch_num=epoch)
+
+            if self.test_dataset is not None:
+                test_loss = run_epoch('test')
 
             # # supports early stopping based on the test loss, or just save always if no test set is provided
-            # good_model = self.test_dataset is None or test_loss < best_loss
-            # if self.config.ckpt_path is not None and good_model:
-            #     best_loss = test_loss
-            #     self.save_checkpoint()
+            good_model = self.test_dataset is None or test_loss < best_loss
+            if self.config.ckpt_path is not None and good_model:
+                if self.train_dataset is not None and self.test_dataset is not None:
+                    best_loss = test_loss
+                    self.save_checkpoint()
 
             # -- pass in target returns
             if self.config.model_type == 'naive':
@@ -173,25 +181,31 @@ class Trainer:
 
     def get_returns(self, ret):
         self.model.train(False)
-        args=Args(self.config.game.lower(), self.config.seed)
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        args=Args(self.config.game.lower(), self.config.seed, self.device)
         env = Env(args)
         env.eval()
 
         T_rewards, T_Qs = [], []
+        frames = []
         done = True
-        for i in range(10):
+        l = []
+
+
+        for i in range(5):
+            print('Eval Iteration: %d' % (i+1))
             state = env.reset()
             state = state.type(torch.float32).to(self.device).unsqueeze(0).unsqueeze(0)
             rtgs = [ret]
             # first state is from env, first rtg is target return, and first timestep is 0
-            sampled_action = sample(self.model.module, state, 1, temperature=1.0, sample=True, actions=None, 
+            sampled_action = sample(raw_model, state, 1, temperature=1.0, sample=True, actions=None, 
                 rtgs=torch.tensor(rtgs, dtype=torch.long).to(self.device).unsqueeze(0).unsqueeze(-1), 
                 timesteps=torch.zeros((1, 1, 1), dtype=torch.int64).to(self.device))
-
             j = 0
             all_states = state
             actions = []
             while True:
+                frames.append(env.ale.getScreenRGB()[:, :, ::-1])
                 if done:
                     state, reward_sum, done = env.reset(), 0, False
                 action = sampled_action.cpu().numpy()[0,-1]
@@ -202,6 +216,7 @@ class Trainer:
 
                 if done:
                     T_rewards.append(reward_sum)
+                    l.append(j)
                     break
 
                 state = state.unsqueeze(0).unsqueeze(0).to(self.device)
@@ -211,13 +226,20 @@ class Trainer:
                 rtgs += [rtgs[-1] - reward]
                 # all_states has all previous states and rtgs has all previous rtgs (will be cut to block_size in utils.sample)
                 # timestep is just current timestep
-                sampled_action = sample(self.model.module, all_states.unsqueeze(0), 1, temperature=1.0, sample=True, 
+                sampled_action = sample(raw_model, all_states.unsqueeze(0), 1, temperature=1.0, sample=True, 
                     actions=torch.tensor(actions, dtype=torch.long).to(self.device).unsqueeze(1).unsqueeze(0), 
                     rtgs=torch.tensor(rtgs, dtype=torch.long).to(self.device).unsqueeze(0).unsqueeze(-1), 
                     timesteps=(min(j, self.config.max_timestep) * torch.ones((1, 1, 1), dtype=torch.int64).to(self.device)))
+        
         env.close()
-        eval_return = sum(T_rewards)/10.
+        eval_return = sum(T_rewards)/5.
+        eval_return_std = np.std(T_rewards)
+        eval_length = sum(l)/5.
+        eval_length_std = np.std(l)
         print("target return: %d, eval return: %d" % (ret, eval_return))
+        print(eval_return, eval_return_std)
+        print(eval_length, eval_length_std)
+        save_anim(frames, f'{self.config.game}-v0.mp4')
         self.model.train(True)
         return eval_return
 
@@ -311,8 +333,8 @@ class Env():
         cv2.destroyAllWindows()
 
 class Args:
-    def __init__(self, game, seed):
-        self.device = torch.device('cuda')
+    def __init__(self, game, seed, device):
+        self.device = device
         self.seed = seed
         self.max_episode_length = 108e3
         self.game = game
